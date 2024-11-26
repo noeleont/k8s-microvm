@@ -92,6 +92,7 @@
                     networking.hostName = "${hypervisor}-microvm";
 
                     microvm = {
+                      mem = 1024;
                       inherit hypervisor;
                       interfaces = [ {
                         type = "tap";
