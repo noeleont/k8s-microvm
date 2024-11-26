@@ -16,12 +16,12 @@
       system = "x86_64-linux";
     in {
       packages.${system} = {
-        default = self.packages.${system}.my-microvm;
-        my-microvm = self.nixosConfigurations.my-microvm.config.microvm.declaredRunner;
+        default = self.packages.${system}.nested-vm-setup;
+        nested-vm-setup = self.nixosConfigurations.nested-vm-setup.config.microvm.declaredRunner;
       };
 
       nixosConfigurations = {
-        my-microvm = nixpkgs.lib.nixosSystem {
+        nested-vm-setup = nixpkgs.lib.nixosSystem {
           inherit system;
 
           modules = [
@@ -32,27 +32,26 @@
 
             ({ config, lib, pkgs, ... }:
               let
-                inherit (microvm.lib) hypervisors;
-
+                hostnames = [ "worker-1" "worker-2" "worker-3" ];
                 k3sSecret = "AAAAAAAAAAAAAAAAAA";
 
-                hypervisorMacAddrs = builtins.listToAttrs (
-                  map (hypervisor:
+                hostnameMacAddrs = builtins.listToAttrs (
+                  map (hostname:
                     let
-                      hash = builtins.hashString "sha256" hypervisor;
+                      hash = builtins.hashString "sha256" hostname;
                       c = off: builtins.substring off 2 hash;
                       mac = "${builtins.substring 0 1 hash}2:${c 2}:${c 4}:${c 6}:${c 8}:${c 10}";
                     in {
-                      name = hypervisor;
+                      name = hostname;
                       value = mac;
-                    }) hypervisors
+                    }) hostnames
                 );
 
-                hypervisorIPv4Addrs = builtins.listToAttrs (
-                  lib.imap0 (i: hypervisor: {
-                    name = hypervisor;
+                hostnameIPv4Addrs = builtins.listToAttrs (
+                  lib.imap0 (i: hostname: {
+                    name = hostname;
                     value = "10.0.0.${toString (2 + i)}";
-                  }) hypervisors
+                  }) hostnames
                 );
 
               in {
@@ -68,6 +67,13 @@
                 '';
                 services.getty.autologinUser = "root";
 
+                services.k3s = {
+                  enable = true;
+                  role = "server";
+                  token = "${k3sSecret}";
+                  clusterInit = true;
+                };
+
                 # Make alioth available
                 nixpkgs.overlays = [ microvm.overlay ];
 
@@ -75,8 +81,6 @@
                 microvm = {
                   mem = 8192;
                   vcpu = 4;
-                  # Use QEMU because nested virtualization and user networking
-                  # are required.
                   hypervisor = "qemu";
                   interfaces = [ {
                     type = "user";
@@ -86,17 +90,18 @@
                 };
 
                 # Nested MicroVMs (a *host* option)
-                microvm.vms = builtins.mapAttrs (hypervisor: mac: {
+                microvm.vms = builtins.mapAttrs (hostname: mac: {
                   config = {
                     system.stateVersion = config.system.nixos.version;
-                    networking.hostName = "${hypervisor}-microvm";
+                    networking.hostName = "${hostname}-microvm";
+                    networking.firewall.allowedTCPPorts = [ 6443 ];
 
                     microvm = {
                       mem = 2024;
-                      inherit hypervisor;
+                      hypervisor = "qemu";
                       interfaces = [ {
                         type = "tap";
-                        id = "vm-${builtins.substring 0 12 hypervisor}";
+                        id = "vm-${hostname}";
                         inherit mac;
                       } ];
                     };
@@ -110,15 +115,12 @@
                     };
                     services.k3s = {
                       enable = true;
-                      role = "agent"; # Or "agent" for worker only nodes
+                      role = "agent";
                       token = "${k3sSecret}";
                       serverAddr = "https://10.0.0.1:6443";
                     };
-                    networking.firewall.allowedTCPPorts = [
-                      6443
-                    ];
                   };
-                }) hypervisorMacAddrs;
+                }) hostnameMacAddrs;
 
                 systemd.network = {
                   enable = true;
@@ -141,10 +143,10 @@
                       IPv6SendRA = true;
                     };
                     # Let DHCP assign a statically known address to the VMs
-                    dhcpServerStaticLeases = lib.imap0 (i: hypervisor: {
-                      MACAddress = hypervisorMacAddrs.${hypervisor};
-                      Address = hypervisorIPv4Addrs.${hypervisor};
-                    }) hypervisors;
+                    dhcpServerStaticLeases = lib.imap0 (i: hostname: {
+                      MACAddress = hostnameMacAddrs.${hostname};
+                      Address = hostnameIPv4Addrs.${hostname};
+                    }) hostnames;
                     # IPv6 SLAAC
                     ipv6Prefixes = [ {
                       Prefix = "fd12:3456:789a::/64";
@@ -155,9 +157,12 @@
                     networkConfig.Bridge = "virbr0";
                   };
                 };
-                networking.firewall.allowedTCPPorts = [ 6443 6444 ];
                 # Allow DHCP server
-                networking.firewall.allowedUDPPorts = [ 67 ];
+                networking.firewall = {
+                  allowedTCPPorts = [ 6443 ];
+                  allowedUDPPorts = [ 67 ];
+                };
+
                 # Allow Internet access
                 networking.nat = {
                   enable = true;
@@ -165,16 +170,9 @@
                   internalInterfaces = [ "virbr0" ];
                 };
 
-                services.k3s = {
-                  enable = true;
-                  role = "server";
-                  token = "${k3sSecret}";
-                  clusterInit = true;
-                };
-
-                networking.extraHosts = lib.concatMapStrings (hypervisor: ''
-                  ${hypervisorIPv4Addrs.${hypervisor}} ${hypervisor}
-                '') hypervisors;
+                networking.extraHosts = lib.concatMapStrings (hostname: ''
+                  ${hostnameIPv4Addrs.${hostname}} ${hostname}
+                '') hostnames;
               })
           ];
         };
