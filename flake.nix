@@ -92,7 +92,7 @@
                     networking.hostName = "${hypervisor}-microvm";
 
                     microvm = {
-                      mem = 1024;
+                      mem = 2024;
                       inherit hypervisor;
                       interfaces = [ {
                         type = "tap";
@@ -155,8 +155,9 @@
                     networkConfig.Bridge = "virbr0";
                   };
                 };
+                networking.firewall.allowedTCPPorts = [ 6443 6444 ];
                 # Allow DHCP server
-                networking.firewall.allowedUDPPorts = [ 67 6443 ];
+                networking.firewall.allowedUDPPorts = [ 67 ];
                 # Allow Internet access
                 networking.nat = {
                   enable = true;
